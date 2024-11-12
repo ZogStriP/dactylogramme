@@ -6,43 +6,45 @@
 #include <unistd.h>
 
 static sd_bus *bus = NULL;
+static sd_bus_message *pending_auth = NULL;
 
 static char *fp_device = NULL;
 static char *cookie = NULL;
-static char *result = NULL;
-
-static sd_bus_message *pending_auth = NULL;
-
-static bool str_equal(const char *a, const char *b) {
-  if (a == NULL && b == NULL) return true;
-  if (a == NULL || b == NULL) return false;
-  return strcmp(a, b) == 0;
-}
-
-static bool has_prefix(const char *str, const char *prefix) {
-  if (str == NULL || prefix == NULL) return false;
-  return strncmp(str, prefix, strlen(prefix)) == 0;
-}
 
 static int verify_status(sd_bus_message *m, void *userdata, sd_bus_error *error) {
+  char *result = NULL;
+  bool success = false;
+  int p[2];
+
   sd_bus_message_read(m, "s", &result);
 
-  if (str_equal(result, "verify-match")) {
-    int pid = fork();
+  if (strcmp(result, "verify-match") == 0) {
+    pipe(p);
 
-    if (pid == 0) {
+    if (fork() == 0) {
       char uid[20];
       snprintf(uid, sizeof(uid), "%d", getuid());
 
-      // TODO: pass the cookie via stdin (pipe)
-      execl("/persist/z/poetry/dactylogramme-c/build/dactylogramme-helper", "dactylogramme-helper", uid, cookie, NULL);
+      dup2(p[0], STDIN_FILENO);
+      close(p[1]);
+
+      execl("/persist/z/poetry/dactylogramme-c/build/dactylogramme-helper", "dactylogramme-helper", uid, NULL);
 
       _exit(1);
     }
 
-    // TODO: check exit status code
-    wait(NULL);
+    dprintf(p[1], "%s\n", cookie);
 
+    close(p[0]);
+    close(p[1]);
+
+    int status;
+    wait(&status);
+
+    success = WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS;
+  }
+
+  if (success) {
     sd_bus_reply_method_return(pending_auth, NULL);
   } else {
     sd_bus_reply_method_errorf(pending_auth, "org.freedesktop.PolicyKit1.Error.Failed", "Auth failed");
@@ -115,3 +117,4 @@ int main() {
     sd_bus_process(bus, NULL);
   }
 }
+

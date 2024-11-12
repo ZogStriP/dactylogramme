@@ -1,9 +1,14 @@
+#include <stdlib.h>
 #include <systemd/sd-bus.h>
 
 int main(int argc, char *argv[]) {
   sd_bus *bus = NULL;
 
   int uid = atoi(argv[1]);
+
+  char cookie[100];
+  fgets(cookie, sizeof(cookie), stdin);
+  cookie[strcspn(cookie, "\n")] = 0;
 
   sd_bus_open_system(&bus);
 
@@ -16,11 +21,11 @@ int main(int argc, char *argv[]) {
     NULL,
     "us(sa{sv})",
     uid,
-    argv[2],
+    cookie,
     "unix-user", 1, "uid", "u", uid
   );
 
   sd_bus_unref(bus);
 
-  return -r;
+  return r < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
