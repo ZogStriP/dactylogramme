@@ -77,6 +77,7 @@ static int verify_status(sd_bus_message *m, void *userdata, sd_bus_error *error)
 
     close(p[0]);
     close(p[1]);
+    p[0] = p[1] = -1;
 
     int status;
     if (waitpid(pid, &status, 0) == -1) {
