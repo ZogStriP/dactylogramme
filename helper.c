@@ -1,8 +1,10 @@
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <systemd/sd-bus.h>
 
 int main(int argc, char *argv[]) {
-  sd_bus *bus = NULL;
+  if (argc != 2 || isatty(STDIN_FILENO)) return EXIT_FAILURE;
 
   int uid = atoi(argv[1]);
 
@@ -10,6 +12,7 @@ int main(int argc, char *argv[]) {
   fgets(cookie, sizeof(cookie), stdin);
   cookie[strcspn(cookie, "\n")] = 0;
 
+  sd_bus *bus = NULL;
   sd_bus_open_system(&bus);
 
   int r = sd_bus_call_method(bus,

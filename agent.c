@@ -15,7 +15,6 @@
 #define PK_AUTH_AGENT_PATH "/org/freedesktop/PolicyKit1/AuthenticationAgent"
 #define PK_ERROR_FAILED "org.freedesktop.PolicyKit1.Error.Failed"
 
-#define HELPER_PATH "/persist/z/poetry/dactylogramme-c/build/dactylogramme-helper"
 #define HELPER_NAME "dactylogramme-helper"
 
 static volatile sig_atomic_t running = 1;
@@ -26,12 +25,11 @@ static sd_bus_message *pending_auth = NULL;
 static char *fp_device = NULL;
 static char *cookie = NULL;
 
-static void exit_handler(const int signal) {
-  (void)signal;
+static void exit_handler(int signal) {
   running = 0;
 }
 
-static void release_device(void) {
+static void release_device() {
   if (pending_auth) {
     sd_bus_message_unref(pending_auth);
     pending_auth = NULL;
@@ -42,12 +40,11 @@ static void release_device(void) {
 }
 
 static int verify_status(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  (void)userdata;
-  (void)error;
-
   int success = 0;
   int p[2] = { -1, -1 };
   char *result = NULL;
+
+  if (!pending_auth) return -1;
 
   sd_bus_message_read(m, "s", &result);
 
@@ -63,7 +60,7 @@ static int verify_status(sd_bus_message *m, void *userdata, sd_bus_error *error)
       close(p[0]);
       close(p[1]);
 
-      execl(HELPER_PATH, HELPER_NAME, uid, NULL);
+      execlp(HELPER_NAME, HELPER_NAME, uid, NULL);
 
       _exit(EXIT_FAILURE);
     }
@@ -91,15 +88,13 @@ static int verify_status(sd_bus_message *m, void *userdata, sd_bus_error *error)
 }
 
 static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  (void)userdata;
-  (void)error;
-
   if (pending_auth) return -1;
   pending_auth = sd_bus_message_ref(m);
   
   sd_bus_message_skip(m, "sssa{ss}");
   sd_bus_message_read(m, "s", &cookie);
 
+  // TODO fail if we can't claim nor start verification
   sd_bus_call_method(bus, FP_SERVICE, fp_device, FP_DEVICE_INTERFACE, "Claim", NULL, NULL, "s", getlogin());
   sd_bus_call_method(bus, FP_SERVICE, fp_device, FP_DEVICE_INTERFACE, "VerifyStart", NULL, NULL, "s", "any");
 
@@ -107,12 +102,7 @@ static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error 
 }
 
 static int cancel_authentication(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  (void)m;
-  (void)userdata;
-  (void)error;
-
   release_device();
-
   return 0;
 }
 
@@ -129,12 +119,12 @@ int main() {
   sigaction(SIGQUIT, &sa, NULL);
   sigaction(SIGTERM, &sa, NULL);
 
-  const char *session_id = getenv("XDG_SESSION_ID");
+  char *session_id = getenv("XDG_SESSION_ID");
   if (!session_id) session_id = "1";
 
   sd_bus_open_system(&bus);
 
-  sd_bus_message *m = NULL;
+  sd_bus_message *m = NULL; 
   sd_bus_call_method(bus, FP_SERVICE, FP_MANAGER_PATH, FP_MANAGER_INTERFACE, "GetDefaultDevice", NULL, &m, NULL);
   sd_bus_message_read(m, "o", &fp_device);
   sd_bus_message_unref(m);
