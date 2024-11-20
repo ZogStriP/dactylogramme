@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 
+#include <fcntl.h>
 #include <stdlib.h>
 #include <systemd/sd-bus.h>
 #include <systemd/sd-event.h>
@@ -27,19 +28,27 @@ static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error 
   sd_bus_message_skip(m, "sssa{ss}");
   sd_bus_message_read(m, "s", &cookie);
 
+  sigset_t ss = { 0 };
+  sigaddset(&ss, SIGCHLD);
+  sigprocmask(SIG_BLOCK, &ss, NULL);
+
   int p[2];
   pipe(p);
 
   pid_t pid = fork();
 
   if (pid == 0) {
+    int dev_null = open("/dev/null", O_WRONLY);
+
     dup2(p[0], STDIN_FILENO);
+    dup2(dev_null, STDOUT_FILENO);
+    dup2(dev_null, STDERR_FILENO);
 
     close(p[0]);
     close(p[1]);
+    close(dev_null);
 
-    execlp("polkit-agent-helper-1", "polkit-agent-helper-1", getlogin(), NULL);
-
+    execlp("polkit-agent-helper-1", "polkit-agent-helper-1", getenv("USER"), NULL);
     _exit(EXIT_FAILURE);
   }
 
@@ -50,6 +59,8 @@ static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error 
 
   sd_bus_message_ref(m);
   sd_event_add_child(event, NULL, pid, WEXITED, helper_cb, m);
+
+  sigprocmask(SIG_UNBLOCK, &ss, NULL);
 
   return 1;
 }
@@ -66,7 +77,9 @@ static int fprint_cb(sd_bus_message *m, void *userdata, sd_bus_error *error) {
     printf("FINGER\n"); // red
   } else if (strcmp(member, "VerifyStatus") == 0) {
     char *result = NULL;
-    sd_bus_message_read(m, "s", &result);
+    int done;
+
+    sd_bus_message_read(m, "sb", &result, &done);
 
     if (strcmp(result, "verify-match") == 0) {
       printf("YES!\n"); // green
@@ -87,9 +100,6 @@ static const sd_bus_vtable vtable[] = {
 };
 
 int main() {
-  sigset_t ss = { SIGCHLD };
-  sigprocmask(SIG_BLOCK, &ss, NULL);
-
   sd_event_default(&event);
   sd_bus_open_system(&bus);
   sd_bus_attach_event(bus, event, 0);
