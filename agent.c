@@ -2,107 +2,80 @@
 
 #include <stdlib.h>
 #include <systemd/sd-bus.h>
-
-#define FP_SERVICE "net.reactivated.Fprint"
-#define FP_DEVICE_INTERFACE "net.reactivated.Fprint.Device"
-#define FP_MANAGER_INTERFACE "net.reactivated.Fprint.Manager"
-#define FP_MANAGER_PATH "/net/reactivated/Fprint/Manager"
-
-#define PK_SERVICE "org.freedesktop.PolicyKit1"
-#define PK_AUTHORITY_INTERFACE "org.freedesktop.PolicyKit1.Authority"
-#define PK_AUTHORITY_PATH "/org/freedesktop/PolicyKit1/Authority"
-#define PK_AUTH_AGENT_INTERFACE "org.freedesktop.PolicyKit1.AuthenticationAgent"
-#define PK_AUTH_AGENT_PATH "/org/freedesktop/PolicyKit1/AuthenticationAgent"
-#define PK_ERROR_FAILED "org.freedesktop.PolicyKit1.Error.Failed"
-
-#define HELPER_NAME "dactylogramme-helper"
-
-static volatile sig_atomic_t running = 1;
+#include <systemd/sd-event.h>
 
 static sd_bus *bus = NULL;
-static sd_bus_message *pending_auth = NULL;
+static sd_event *event = NULL;
 
-static char *fp_device = NULL;
-static char *cookie = NULL;
+static int helper_cb(sd_event_source *s, const siginfo_t *si, void *userdata) {
+  sd_bus_message *m = userdata;
 
-static void exit_handler(int signal) {
-  running = 0;
-}
-
-static void release_device() {
-  if (pending_auth) {
-    sd_bus_message_unref(pending_auth);
-    pending_auth = NULL;
-  }
-
-  sd_bus_call_method(bus, FP_SERVICE, fp_device, FP_DEVICE_INTERFACE, "VerifyStop", NULL, NULL, NULL);
-  sd_bus_call_method(bus, FP_SERVICE, fp_device, FP_DEVICE_INTERFACE, "Release", NULL, NULL, NULL);
-}
-
-static int verify_status(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  int success = 0;
-  int p[2] = { -1, -1 };
-  char *result = NULL;
-
-  if (!pending_auth) return -1;
-
-  sd_bus_message_read(m, "s", &result);
-
-  if (strcmp(result, "verify-match") == 0) {
-    pipe(p);
-
-    if (fork() == 0) {
-      char uid[20];
-      snprintf(uid, sizeof(uid), "%d", getuid());
-
-      dup2(p[0], STDIN_FILENO);
-
-      close(p[0]);
-      close(p[1]);
-
-      execlp(HELPER_NAME, HELPER_NAME, uid, NULL);
-
-      _exit(EXIT_FAILURE);
-    }
-
-    dprintf(p[1], "%s\n", cookie);
-
-    close(p[0]);
-    close(p[1]);
-
-    int status;
-    wait(&status);
-
-    success = WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS;
-  }
-
-  if (success) {
-    sd_bus_reply_method_return(pending_auth, NULL);
+  if (si->si_code == CLD_EXITED && si->si_status == EXIT_SUCCESS) {
+    sd_bus_reply_method_return(m, NULL);
   } else {
-    sd_bus_reply_method_errorf(pending_auth, PK_ERROR_FAILED, "Authentication failed");
+    sd_bus_reply_method_errorf(m, "org.freedesktop.PolicyKit1.Error.Failed", "Authentication failed");
   }
 
-  release_device();
+  sd_bus_message_unref(m);
 
   return 0;
 }
 
 static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  if (pending_auth) return -1;
-  pending_auth = sd_bus_message_ref(m);
-  
+  char *cookie = NULL;
+
   sd_bus_message_skip(m, "sssa{ss}");
   sd_bus_message_read(m, "s", &cookie);
 
-  // TODO fail if we can't claim nor start verification
-  sd_bus_call_method(bus, FP_SERVICE, fp_device, FP_DEVICE_INTERFACE, "Claim", NULL, NULL, "s", getlogin());
-  sd_bus_call_method(bus, FP_SERVICE, fp_device, FP_DEVICE_INTERFACE, "VerifyStart", NULL, NULL, "s", "any");
+  int p[2];
+  pipe(p);
+
+  pid_t pid = fork();
+
+  if (pid == 0) {
+    dup2(p[0], STDIN_FILENO);
+
+    close(p[0]);
+    close(p[1]);
+
+    execlp("polkit-agent-helper-1", "polkit-agent-helper-1", getlogin(), NULL);
+
+    _exit(EXIT_FAILURE);
+  }
+
+  dprintf(p[1], "%s\n", cookie);
+
+  close(p[0]);
+  close(p[1]);
+
+  sd_bus_message_ref(m);
+  sd_event_add_child(event, NULL, pid, WEXITED, helper_cb, m);
 
   return 1;
 }
 
 static int cancel_authentication(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  release_device();
+  printf("CANCEL!\n");
+  return 0;
+}
+
+static int fprint_cb(sd_bus_message *m, void *userdata, sd_bus_error *error) {
+  const char *member = sd_bus_message_get_member(m);
+
+  if (strcmp(member, "VerifyFingerSelected") == 0) {
+    printf("FINGER\n"); // red
+  } else if (strcmp(member, "VerifyStatus") == 0) {
+    char *result = NULL;
+    sd_bus_message_read(m, "s", &result);
+
+    if (strcmp(result, "verify-match") == 0) {
+      printf("YES!\n"); // green
+      // sleep(500ms)
+    }
+
+    // white
+  }
+
   return 0;
 }
 
@@ -114,43 +87,33 @@ static const sd_bus_vtable vtable[] = {
 };
 
 int main() {
-  struct sigaction sa = { .sa_handler = exit_handler, .sa_flags = SA_RESTART };
-  sigaction(SIGINT,  &sa, NULL);
-  sigaction(SIGQUIT, &sa, NULL);
-  sigaction(SIGTERM, &sa, NULL);
+  sigset_t ss = { SIGCHLD };
+  sigprocmask(SIG_BLOCK, &ss, NULL);
 
-  char *session_id = getenv("XDG_SESSION_ID");
-  if (!session_id) session_id = "1";
-
+  sd_event_default(&event);
   sd_bus_open_system(&bus);
+  sd_bus_attach_event(bus, event, 0);
 
-  sd_bus_message *m = NULL; 
-  sd_bus_call_method(bus, FP_SERVICE, FP_MANAGER_PATH, FP_MANAGER_INTERFACE, "GetDefaultDevice", NULL, &m, NULL);
-  sd_bus_message_read(m, "o", &fp_device);
-  sd_bus_message_unref(m);
+  sd_bus_add_match(bus, NULL, "interface='net.reactivated.Fprint.Device'", fprint_cb, NULL);
 
-  sd_bus_match_signal(bus, NULL, FP_SERVICE, fp_device, FP_DEVICE_INTERFACE, "VerifyStatus", verify_status, NULL);
-
-  sd_bus_add_object_vtable(bus, NULL, PK_AUTH_AGENT_PATH, PK_AUTH_AGENT_INTERFACE, vtable, NULL);
+  sd_bus_add_object_vtable(bus, NULL, "/org/freedesktop/PolicyKit1/AuthenticationAgent", "org.freedesktop.PolicyKit1.AuthenticationAgent", vtable, NULL);
 
   sd_bus_call_method(bus, 
-    PK_SERVICE, 
-    PK_AUTHORITY_PATH,
-    PK_AUTHORITY_INTERFACE, 
+    "org.freedesktop.PolicyKit1", 
+    "/org/freedesktop/PolicyKit1/Authority",
+    "org.freedesktop.PolicyKit1.Authority", 
     "RegisterAuthenticationAgent", 
     NULL, 
     NULL,
     "(sa{sv})ss", 
-    "unix-session", 1, "session-id", "s", session_id,
+    "unix-session", 1, "session-id", "s", getenv("XDG_SESSION_ID"),
     NULL /* locale */, 
-    PK_AUTH_AGENT_PATH);
+    "/org/freedesktop/PolicyKit1/AuthenticationAgent");
 
-  while (running) {
-    sd_bus_wait(bus, -1);
-    sd_bus_process(bus, NULL);
-  }
+  sd_event_loop(event);
 
   sd_bus_unref(bus);
+  sd_event_unref(event);
 
   return EXIT_SUCCESS;
 }
