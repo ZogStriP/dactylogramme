@@ -1,17 +1,17 @@
 #define _GNU_SOURCE
+#define LED "/sys/class/leds/chromeos:multicolor:power/"
 
 #include <systemd/sd-bus.h>
 
 static int fprint_cb(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  char *member = sd_bus_message_get_member(m);
+  const char *member = sd_bus_message_get_member(m);
 
   // TODO: control the power LED using syfs
-  // -> /sys/class/leds/chromeos:multicolor:power/
 
   if (strcmp(member, "VerifyFingerSelected") == 0) {
     printf("FINGER\n");
   } else if (strcmp(member, "VerifyStatus") == 0) {
-    char *result = NULL;
+    const char *result = NULL;
     sd_bus_message_read(m, "s", &result);
 
     if (strcmp(result, "verify-match") == 0) {
