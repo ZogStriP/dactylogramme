@@ -22,7 +22,8 @@ static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error 
     _exit(EXIT_FAILURE);
   }
 
-  dprintf(p[1], "%s\n", cookie);
+  write(p[1], cookie, strlen(cookie));
+  write(p[1], "\n", 1);
 
   close(p[0]);
   close(p[1]);
