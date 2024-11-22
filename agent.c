@@ -19,6 +19,7 @@ static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error 
     close(p[1]);
 
     execlp("polkit-agent-helper-1", "polkit-agent-helper-1", getenv("USER"), NULL);
+
     _exit(EXIT_FAILURE);
   }
 
@@ -28,12 +29,9 @@ static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error 
   close(p[0]);
   close(p[1]);
 
-  int status;
-  wait(&status);
+  wait(NULL);
 
-  return WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS ?
-    sd_bus_reply_method_return(m, NULL) :
-    sd_bus_reply_method_errorf(m, "org.freedesktop.PolicyKit1.Error.Failed", "Authentication failed");
+  return sd_bus_reply_method_return(m, NULL);
 }
 
 int main() {
