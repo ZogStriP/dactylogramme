@@ -1,10 +1,9 @@
 #define _GNU_SOURCE
-
 #include <stdlib.h>
 #include <systemd/sd-bus.h>
 
 static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  char *cookie = NULL;
+  const char *cookie = NULL;
 
   sd_bus_message_skip(m, "sssa{ss}");
   sd_bus_message_read(m, "s", &cookie);
