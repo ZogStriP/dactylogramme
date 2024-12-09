@@ -3,15 +3,15 @@
 #include <systemd/sd-bus.h>
 
 static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-  const char *cookie = NULL;
+  const char *cookie;
+  int p[2];
 
   sd_bus_message_skip(m, "sssa{ss}");
   sd_bus_message_read(m, "s", &cookie);
 
-  int p[2];
   pipe(p);
 
-  if (fork() == 0) {
+  if (!fork()) {
     dup2(p[0], STDIN_FILENO);
 
     close(p[0]);
@@ -22,9 +22,8 @@ static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error 
     _exit(EXIT_FAILURE);
   }
 
-  write(p[1], cookie, strlen(cookie));
-  write(p[1], "\n", 1);
-
+  dprintf(p[1], "%s\n", cookie);
+  
   close(p[0]);
   close(p[1]);
 
@@ -34,7 +33,7 @@ static int begin_authentication(sd_bus_message *m, void *userdata, sd_bus_error 
 }
 
 int main() {
-  sd_bus *bus = NULL;
+  sd_bus *bus;
 
   sd_bus_open_system(&bus);
 
